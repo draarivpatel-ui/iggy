@@ -192,8 +192,7 @@ fn generate_single_test(
     let fixture_envs = generate_fixture_envs_collection(params);
     let fixture_param_bindings = generate_fixture_param_bindings(params);
     let harness_setup = generate_harness_setup(variant, has_fixtures, attrs);
-    let fixture_seed = generate_fixture_seed(params);
-    let start_and_seed = generate_start_and_seed(attrs, fixture_seed);
+    let start_and_seed = generate_start_and_seed(attrs);
     let harness_param_bindings = generate_harness_param_bindings(params);
     let vsr_cfg = vsr_transport_cfg(variant.transport);
 
@@ -230,15 +229,14 @@ fn generate_test_module(
     let fixture_setup = generate_fixture_setup(params);
     let fixture_envs = generate_fixture_envs_collection(params);
     let fixture_param_bindings = generate_fixture_param_bindings(params);
-    let fixture_seed = generate_fixture_seed(params);
     let harness_param_bindings = generate_harness_param_bindings(params);
+    let start_and_seed = generate_start_and_seed(attrs);
 
     let mut test_fns = Vec::new();
 
     for variant in variants {
         let test_name = format_ident!("{}", variant.suffix());
         let harness_setup = generate_harness_setup(variant, has_fixtures, attrs);
-        let start_and_seed = generate_start_and_seed(attrs, fixture_seed.clone());
         let vsr_cfg = vsr_transport_cfg(variant.transport);
 
         test_fns.push(quote! {
@@ -305,9 +303,8 @@ fn generate_impl_functions_for_test_matrix(
     let fixture_setup = generate_fixture_setup(params);
     let fixture_envs = generate_fixture_envs_collection(params);
     let fixture_param_bindings = generate_fixture_param_bindings(params);
-    let fixture_seed = generate_fixture_seed(params);
     let harness_param_bindings = generate_harness_param_bindings(params);
-    let start_and_seed = generate_start_and_seed(attrs, fixture_seed.clone());
+    let start_and_seed = generate_start_and_seed(attrs);
 
     if variants.len() == 1 {
         let variant = &variants[0];
@@ -555,40 +552,21 @@ fn generate_harness_setup(
 ///
 /// When a seed function is present, uses `start_with_seed` to run seed
 /// after server but before MCP and connectors runtime (which may depend on seed data).
-/// Fixture seeds are combined with the global seed.
-fn generate_start_and_seed(attrs: &IggyTestAttrs, fixture_seed: TokenStream) -> TokenStream {
+fn generate_start_and_seed(attrs: &IggyTestAttrs) -> TokenStream {
     // `manual_start` hands the bring-up to the test body, so there is nothing
     // to emit and no client for a seed to run against.
     if attrs.manual_start {
         return TokenStream::new();
     }
-    let has_fixture_seed = !fixture_seed.is_empty();
-    match (&attrs.seed_fn, has_fixture_seed) {
-        (Some(seed_fn), true) => {
-            quote! {
-                __harness.start_with_seed(|__seed_client| async move {
-                    #seed_fn(&__seed_client).await?;
-                    #fixture_seed
-                    Ok(())
-                }).await.unwrap_or_else(|e| panic!("failed to start test harness: {e}"));
-            }
-        }
-        (Some(seed_fn), false) => {
+    match &attrs.seed_fn {
+        Some(seed_fn) => {
             quote! {
                 __harness.start_with_seed(|__seed_client| async move {
                     #seed_fn(&__seed_client).await
                 }).await.unwrap_or_else(|e| panic!("failed to start test harness: {e}"));
             }
         }
-        (None, true) => {
-            quote! {
-                __harness.start_with_seed(|__seed_client| async move {
-                    #fixture_seed
-                    Ok(())
-                }).await.unwrap_or_else(|e| panic!("failed to start test harness: {e}"));
-            }
-        }
-        (None, false) => {
+        None => {
             quote! {
                 __harness.start().await.unwrap_or_else(|e| panic!("failed to start test harness: {e}"));
             }
@@ -657,21 +635,6 @@ fn generate_fixture_envs_collection(params: &[DetectedParam]) -> TokenStream {
     }
 }
 
-/// Generate fixture seed calls (inside start_with_seed closure).
-///
-/// Note: Currently disabled to avoid move semantics issues with async closures.
-/// Fixtures that need to seed data should do so in the test body after harness start.
-fn generate_fixture_seed(_params: &[DetectedParam]) -> TokenStream {
-    // Fixture seeding is disabled for now because:
-    // 1. The async move closure in start_with_seed captures the fixture by value
-    // 2. This prevents using the fixture in the test body after seeding
-    // 3. Most fixtures don't need to seed data - they just provide env vars
-    //
-    // If a fixture needs to seed data, it can be done manually in the test body:
-    //   fixture.seed(&client).await.unwrap();
-    quote!()
-}
-
 /// Emit bindings that move each fixture's internal variable (`__fixture_X`) into
 /// the user-facing name.  These are emitted **before** `__harness` is declared so
 /// that Rust's LIFO drop order destroys `__harness` (connector runtime) first and
@@ -712,6 +675,24 @@ fn generate_harness_param_bindings(params: &[DetectedParam]) -> TokenStream {
 mod tests {
     use super::*;
     use crate::attrs::{ConfigOverride, ConfigValue};
+
+    #[test]
+    fn generate_start_and_seed_modes() {
+        let attrs = IggyTestAttrs::default();
+        assert!(
+            generate_start_and_seed(&attrs)
+                .to_string()
+                .contains("__harness . start ()")
+        );
+
+        let attrs: IggyTestAttrs = syn::parse_quote!(seed = seeds::connector_stream);
+        let seeded = generate_start_and_seed(&attrs).to_string();
+        assert!(seeded.contains("__harness . start_with_seed"));
+        assert!(seeded.contains("seeds :: connector_stream (& __seed_client) . await"));
+
+        let attrs: IggyTestAttrs = syn::parse_quote!(manual_start);
+        assert!(generate_start_and_seed(&attrs).is_empty());
+    }
 
     #[test]
     fn variant_suffix_basic_explicit() {
