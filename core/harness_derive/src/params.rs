@@ -40,20 +40,6 @@ pub enum DetectedParam {
     MatrixParam { name: Ident, ty: Box<Type> },
 }
 
-impl DetectedParam {
-    #[allow(dead_code)]
-    pub fn name(&self) -> &Ident {
-        match self {
-            DetectedParam::HarnessRef { name }
-            | DetectedParam::HarnessMut { name }
-            | DetectedParam::HarnessOwned { name }
-            | DetectedParam::HarnessOwnedMut { name }
-            | DetectedParam::Fixture { name, .. }
-            | DetectedParam::MatrixParam { name, .. } => name,
-        }
-    }
-}
-
 /// Analyze a function signature and detect parameter types.
 pub fn analyze_signature(sig: &Signature) -> syn::Result<Vec<DetectedParam>> {
     let mut params = Vec::new();
